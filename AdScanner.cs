@@ -21,6 +21,8 @@ public class ScannerOptions
     public List<string> ObjectClassesToScan { get; set; } = new() { "user", "group", "computer", "organizationalUnit" };
     public string? SearchFilter { get; set; }
     public bool VerboseOutput { get; set; } = false;
+    public int MaxRetries { get; set; } = 3;
+    public int RetryDelayMilliseconds { get; set; } = 1000;
 }
 
 /// <summary>
@@ -47,8 +49,8 @@ public class AdScanner : IDisposable
     {
         var result = new ScanResult
         {
-            ScanTarget = string.IsNullOrEmpty(_options.DomainName) 
-                ? _options.LdapPath ?? "Local" 
+            ScanTarget = string.IsNullOrEmpty(_options.DomainName)
+                ? _options.LdapPath ?? "Local"
                 : _options.DomainName,
             ScanStartTime = DateTime.UtcNow
         };
@@ -56,7 +58,7 @@ public class AdScanner : IDisposable
         try
         {
             _rootEntry = await GetRootDirectoryEntryAsync(cancellationToken);
-            
+
             if (_rootEntry == null)
             {
                 result.IsSuccess = false;
@@ -96,17 +98,23 @@ public class AdScanner : IDisposable
         {
             if (!string.IsNullOrEmpty(_options.LdapPath))
             {
-                return CreateDirectoryEntry(_options.LdapPath);
+                return await ExecuteWithRetryAsync(
+                    () => Task.FromResult(CreateDirectoryEntry(_options.LdapPath)),
+                    "LDAP connection");
             }
 
             if (!string.IsNullOrEmpty(_options.DomainName))
             {
                 var ldapPath = $"LDAP://{_options.DomainName}";
-                return CreateDirectoryEntry(ldapPath);
+                return await ExecuteWithRetryAsync(
+                    () => Task.FromResult(CreateDirectoryEntry(ldapPath)),
+                    "LDAP connection");
             }
 
             var domain = Domain.GetCurrentDomain();
-            return CreateDirectoryEntry($"LDAP://{domain.Name}");
+            return await ExecuteWithRetryAsync(
+                () => Task.FromResult(CreateDirectoryEntry($"LDAP://{domain.Name}")),
+                "LDAP connection");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -126,11 +134,11 @@ public class AdScanner : IDisposable
     }
 
     private async Task<List<ScannedAdObject>> ScanDirectoryObjectsAsync(
-        DirectoryEntry rootEntry, 
+        DirectoryEntry rootEntry,
         CancellationToken cancellationToken)
     {
         var scannedObjects = new List<ScannedAdObject>();
-        
+
         try
         {
             using var searcher = CreateDirectorySearcher(rootEntry);
@@ -156,25 +164,30 @@ public class AdScanner : IDisposable
             await Task.Yield();
             cancellationToken.ThrowIfCancellationRequested();
 
-            using var results = searcher.FindAll();
-            
-            foreach (SearchResult result in results)
+            var results = await ExecuteWithRetryAsync(
+                () => Task.FromResult<SearchResultCollection>(searcher.FindAll()),
+                "LDAP search");
+
+            using (results)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                
-                try
+                foreach (SearchResult result in results)
                 {
-                    var scannedObject = ProcessSearchResult(result);
-                    if (scannedObject != null)
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    try
                     {
-                        scannedObjects.Add(scannedObject);
+                        var scannedObject = ProcessSearchResult(result);
+                        if (scannedObject != null)
+                        {
+                            scannedObjects.Add(scannedObject);
+                        }
                     }
-                }
-                catch (Exception ex)
-                {
-                    if (_options.VerboseOutput)
+                    catch (Exception ex)
                     {
-                        Console.WriteLine($"Error processing object: {ex.Message}");
+                        if (_options.VerboseOutput)
+                        {
+                            Console.WriteLine($"Error processing object: {ex.Message}");
+                        }
                     }
                 }
             }
@@ -193,7 +206,7 @@ public class AdScanner : IDisposable
     private DirectorySearcher CreateDirectorySearcher(DirectoryEntry rootEntry)
     {
         var searcher = new DirectorySearcher(rootEntry);
-        
+
         if (!string.IsNullOrEmpty(_options.Username) && !string.IsNullOrEmpty(_options.Password))
         {
             searcher.SearchClient = new DirectorySearcher(rootEntry)
@@ -232,8 +245,8 @@ public class AdScanner : IDisposable
         var scannedObject = new ScannedAdObject
         {
             DistinguishedName = result.Properties["distinguishedName"][0]?.ToString() ?? string.Empty,
-            Name = result.Properties["name"].Count > 0 
-                ? result.Properties["name"][0]?.ToString() ?? string.Empty 
+            Name = result.Properties["name"].Count > 0
+                ? result.Properties["name"][0]?.ToString() ?? string.Empty
                 : string.Empty,
             SamAccountName = result.Properties["sAMAccountName"].Count > 0
                 ? result.Properties["sAMAccountName"][0]?.ToString()
@@ -251,7 +264,7 @@ public class AdScanner : IDisposable
         scannedObject.WhenChanged = ParseDateTime(result.Properties["whenChanged"]);
         scannedObject.IsEnabled = IsAccountEnabled(result);
 
-        if (_options.ResolveGroupMemberships && 
+        if (_options.ResolveGroupMemberships &&
             result.Properties["memberOf"].Count > 0)
         {
             foreach (var memberOf in result.Properties["memberOf"])
@@ -381,6 +394,32 @@ public class AdScanner : IDisposable
         };
 
         return wellKnownRights.TryGetValue(guid.Value, out var name) ? name : guid.ToString();
+    }
+
+    private async Task<T> ExecuteWithRetryAsync<T>(Func<Task<T>> operation, string operationName)
+    {
+        var lastException = new COMException("Retry attempts exhausted");
+        var delay = _options.RetryDelayMilliseconds;
+
+        for (var attempt = 1; attempt <= _options.MaxRetries; attempt++)
+        {
+            try
+            {
+                return await operation();
+            }
+            catch (COMException ex) when (attempt < _options.MaxRetries)
+            {
+                lastException = ex;
+                if (_options.VerboseOutput)
+                {
+                    Console.WriteLine($"{operationName} failed (attempt {attempt}/{_options.MaxRetries}): {ex.Message}. Retrying in {delay}ms...");
+                }
+                await Task.Delay(delay);
+                delay *= 2;
+            }
+        }
+
+        throw lastException;
     }
 
     public void Dispose()
