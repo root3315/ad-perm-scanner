@@ -94,6 +94,18 @@ public class Program
             description: "Show only objects with high-risk permissions"
         );
 
+        var maxRetriesOption = new Option<int>(
+            aliases: new[] { "--max-retries" },
+            getDefaultValue: () => 3,
+            description: "Maximum number of retry attempts for LDAP operations"
+        );
+
+        var retryDelayOption = new Option<int>(
+            aliases: new[] { "--retry-delay" },
+            getDefaultValue: () => 1000,
+            description: "Initial delay between retries in milliseconds (doubles each retry)"
+        );
+
         rootCommand.AddOption(domainOption);
         rootCommand.AddOption(ldapPathOption);
         rootCommand.AddOption(usernameOption);
@@ -107,6 +119,8 @@ public class Program
         rootCommand.AddOption(verboseOption);
         rootCommand.AddOption(listOnlyOption);
         rootCommand.AddOption(highRiskOnlyOption);
+        rootCommand.AddOption(maxRetriesOption);
+        rootCommand.AddOption(retryDelayOption);
 
         rootCommand.SetHandler(async (invocationContext) =>
         {
@@ -120,7 +134,9 @@ public class Program
                 PageSize = invocationContext.ParseResult.GetValueForOption(pageSizeOption),
                 IncludeInheritedPermissions = invocationContext.ParseResult.GetValueForOption(includeInheritedOption),
                 SearchFilter = invocationContext.ParseResult.GetValueForOption(filterOption),
-                VerboseOutput = invocationContext.ParseResult.GetValueForOption(verboseOption)
+                VerboseOutput = invocationContext.ParseResult.GetValueForOption(verboseOption),
+                MaxRetries = invocationContext.ParseResult.GetValueForOption(maxRetriesOption),
+                RetryDelayMilliseconds = invocationContext.ParseResult.GetValueForOption(retryDelayOption)
             };
 
             var outputPath = invocationContext.ParseResult.GetValueForOption(outputOption);
@@ -221,6 +237,8 @@ public class Program
         Console.WriteLine($"  Page Size:     {options.PageSize}");
         Console.WriteLine($"  Include Inherited: {options.IncludeInheritedPermissions}");
         Console.WriteLine($"  Verbose:       {options.VerboseOutput}");
+        Console.WriteLine($"  Max Retries:   {options.MaxRetries}");
+        Console.WriteLine($"  Retry Delay:   {options.RetryDelayMilliseconds}ms");
         if (!string.IsNullOrEmpty(options.SearchFilter))
         {
             Console.WriteLine($"  Filter:        {options.SearchFilter}");
@@ -344,6 +362,8 @@ OPTIONS:
   --list-only                  List objects without detailed analysis
   --high-risk-only             Show only high-risk permission objects
   --filter <ldap-filter>       Custom LDAP filter
+  --max-retries <count>        Maximum retry attempts for LDAP operations (default: 3)
+  --retry-delay <ms>           Initial retry delay in milliseconds (default: 1000)
 
 EXAMPLES:
   ad-perm-scanner
