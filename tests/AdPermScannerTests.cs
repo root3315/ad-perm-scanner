@@ -553,6 +553,41 @@ public class ScannerWorkflowTests
     }
 
     [Fact]
+    public async Task AdScanner_Scan_WithShortTimeout_ReturnsTimeoutError()
+    {
+        var options = new ScannerOptions
+        {
+            DomainName = "nonexistent.domain.invalid",
+            TimeoutSeconds = 1
+        };
+
+        using var scanner = new AdScanner(options);
+        var result = await scanner.ScanAsync(CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("timed out", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task AdScanner_Scan_WithPreCancelledToken_ReturnsCancelledError()
+    {
+        var options = new ScannerOptions
+        {
+            DomainName = "test.local",
+            TimeoutSeconds = 60
+        };
+
+        using var scanner = new AdScanner(options);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var result = await scanner.ScanAsync(cts.Token);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("cancelled", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void ScanResult_EmptyObjects_HasZeroCounts()
     {
         var result = new ScanResult
@@ -566,5 +601,41 @@ public class ScannerWorkflowTests
         Assert.Equal(0, result.TotalPermissionsFound);
         Assert.Equal(0, result.CriticalFindings);
         Assert.Equal(0, result.HighFindings);
+    }
+}
+
+/// <summary>
+/// Tests for timeout behavior in ScannerOptions.
+/// </summary>
+public class ScannerOptionsTimeoutTests
+{
+    [Fact]
+    public void ScannerOptions_DefaultTimeout_Is30Seconds()
+    {
+        var options = new ScannerOptions();
+
+        Assert.Equal(30, options.TimeoutSeconds);
+    }
+
+    [Fact]
+    public void ScannerOptions_CustomTimeout_IsSetCorrectly()
+    {
+        var options = new ScannerOptions
+        {
+            TimeoutSeconds = 120
+        };
+
+        Assert.Equal(120, options.TimeoutSeconds);
+    }
+
+    [Fact]
+    public void ScannerOptions_ZeroTimeout_IsAllowed()
+    {
+        var options = new ScannerOptions
+        {
+            TimeoutSeconds = 0
+        };
+
+        Assert.Equal(0, options.TimeoutSeconds);
     }
 }

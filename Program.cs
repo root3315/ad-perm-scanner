@@ -61,7 +61,7 @@ public class Program
         var timeoutOption = new Option<int>(
             aliases: new[] { "--timeout", "-t" },
             getDefaultValue: () => 30,
-            description: "Timeout in seconds for LDAP operations"
+            description: "Timeout in seconds for the entire scan operation (default: 30)"
         );
 
         var pageSizeOption = new Option<int>(
@@ -168,11 +168,12 @@ public class Program
         ScanResult result;
         try
         {
-            result = await scanner.ScanAsync(CancellationToken.None);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(options.TimeoutSeconds));
+            result = await scanner.ScanAsync(cts.Token);
         }
         catch (OperationCanceledException)
         {
-            Console.WriteLine("Scan was cancelled.");
+            Console.WriteLine($"Scan timed out after {options.TimeoutSeconds} seconds.");
             Environment.Exit(1);
             return;
         }
@@ -355,7 +356,7 @@ OPTIONS:
   -p, --password <pass>        Password for authentication
   -o, --output <file>          Output file for report
   -f, --format <format>        Output format: Text, Json, Csv, Html
-  -t, --timeout <seconds>      LDAP operation timeout (default: 30)
+  -t, --timeout <seconds>      Scan timeout in seconds (default: 30)
   --page-size <size>           LDAP query page size (default: 1000)
   -i, --include-inherited      Include inherited permissions
   -v, --verbose                Enable verbose output
