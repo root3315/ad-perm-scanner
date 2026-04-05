@@ -55,9 +55,12 @@ public class AdScanner : IDisposable
             ScanStartTime = DateTime.UtcNow
         };
 
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(_options.TimeoutSeconds));
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+
         try
         {
-            _rootEntry = await GetRootDirectoryEntryAsync(cancellationToken);
+            _rootEntry = await GetRootDirectoryEntryAsync(linkedCts.Token);
 
             if (_rootEntry == null)
             {
@@ -67,9 +70,19 @@ public class AdScanner : IDisposable
                 return result;
             }
 
-            var objects = await ScanDirectoryObjectsAsync(_rootEntry, cancellationToken);
+            var objects = await ScanDirectoryObjectsAsync(_rootEntry, linkedCts.Token);
             result.Objects = objects;
             result.IsSuccess = true;
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+        {
+            result.IsSuccess = false;
+            result.ErrorMessage = $"Scan timed out after {_options.TimeoutSeconds} seconds. The domain controller did not respond within the configured timeout.";
+        }
+        catch (OperationCanceledException)
+        {
+            result.IsSuccess = false;
+            result.ErrorMessage = "Scan was cancelled.";
         }
         catch (Exception ex)
         {
@@ -144,7 +157,7 @@ public class AdScanner : IDisposable
             using var searcher = CreateDirectorySearcher(rootEntry);
             searcher.PageSize = _options.PageSize;
             searcher.SearchScope = SearchScope.Subtree;
-            searcher.SearchTimeout = _options.TimeoutSeconds;
+            searcher.ClientTimeout = new TimeSpan(0, 0, _options.TimeoutSeconds);
 
             foreach (var property in CommonAttributes)
             {
